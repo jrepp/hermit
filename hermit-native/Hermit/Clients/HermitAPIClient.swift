@@ -30,6 +30,36 @@ struct RepositoryRFCSummary {
     let prStateCounts: PRStateCounts
 }
 
+/// Authoritative credential/auth health for a repository, surfaced from the
+/// server's most recent sync outcome. Drives the dashboard auth-status badge.
+enum RepositoryAuthState: String, Decodable {
+    case healthy
+    case authenticationRequired = "authentication_required"
+    case accessDenied = "access_denied"
+    case refreshFailed = "refresh_failed"
+    case unknown
+
+    init(fromRaw value: String) {
+        self = RepositoryAuthState(rawValue: value) ?? .unknown
+    }
+}
+
+struct RepositoryAuthStatus {
+    let state: RepositoryAuthState
+    let method: String
+    let lastValidatedAt: String?
+    let lastSuccessfulRefreshAt: String?
+    let lastAttemptedRefreshAt: String?
+    let lastErrorCode: String?
+    let lastErrorMessage: String?
+    let remediation: String?
+
+    /// True when the stored credential is the root cause of sync failure.
+    var isCredentialIssue: Bool {
+        state == .authenticationRequired || state == .accessDenied
+    }
+}
+
 struct PRStateCounts {
     var ready = 0
     var conflicted = 0
@@ -56,6 +86,7 @@ struct PRStateCounts {
 protocol HermitClientProtocol: Actor {
     // RFC discovery
     func discoverRFCs() async throws -> (mainBranch: [RFCFile], pullRequests: [RFCPullRequest], summary: RepositoryRFCSummary)
+    func fetchAuthStatus() async throws -> RepositoryAuthStatus
     func listMainBranchRFCs() async throws -> [RFCFile]
     func fetchRFCContent(path: String, ref: String) async throws -> String
     func fetchPRRFCContent(prNumber: Int) async throws -> String
@@ -263,6 +294,36 @@ actor HermitAPIClient: HermitClientProtocol {
                     needsReview: page.summary?.pr_states?.needs_review ?? 0
                 )
             )
+        )
+    }
+
+    // MARK: - fetchAuthStatus
+
+    func fetchAuthStatus() async throws -> RepositoryAuthStatus {
+        let repoID = try await repoID()
+        let u = url("/api/v1/repositories/\(repoID)/auth-status")
+        let data = try await get(u)
+
+        struct Payload: Decodable {
+            let state: String
+            let method: String?
+            let last_validated_at: String?
+            let last_successful_refresh_at: String?
+            let last_attempted_refresh_at: String?
+            let last_error_code: String?
+            let last_error_message: String?
+            let remediation: String?
+        }
+        let p = try JSONDecoder().decode(Payload.self, from: data)
+        return RepositoryAuthStatus(
+            state: RepositoryAuthState(fromRaw: p.state),
+            method: p.method ?? "pat",
+            lastValidatedAt: p.last_validated_at,
+            lastSuccessfulRefreshAt: p.last_successful_refresh_at,
+            lastAttemptedRefreshAt: p.last_attempted_refresh_at,
+            lastErrorCode: p.last_error_code,
+            lastErrorMessage: p.last_error_message,
+            remediation: p.remediation
         )
     }
 

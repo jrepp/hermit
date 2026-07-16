@@ -283,8 +283,16 @@ final class AppState: ObservableObject {
             guard !localNetworkToken.isEmpty else { return nil }
             bearer = localNetworkToken
         } else {
-            let conn = AccountStore.shared.connections.first(where: { $0.id == repo.accountID })
-                    ?? AccountStore.shared.connections.first
+            // Resolve the freshest credential for the repo's host: prefer the
+            // most recently validated account on that host, then the repo's
+            // bound account, then the first account, then the legacy AppState
+            // PAT. The credential is kept current by refreshBestCredential()
+            // which is called from the sync path against the Git credential
+            // helper for this host.
+            let host = credentialHost(for: repo)
+            let conn = (host.flatMap { AccountStore.shared.bestConnection(forHost: $0) })
+                ?? AccountStore.shared.connections.first(where: { $0.id == repo.accountID })
+                ?? AccountStore.shared.connections.first
             // Fall back to appState.pat (set by GiteaAutoConfig bundled config) when
             // the account store has no token — this covers the dev migration path.
             let storeToken = conn.flatMap { AccountStore.shared.token(for: $0) } ?? ""
@@ -303,6 +311,16 @@ final class AppState: ObservableObject {
             tlsCertFingerprint: (serverMode == .embeddedLocal) ? "loopback" : ConfigStore.shared.tlsCertFingerprint
         )
         return HermitAPIClient(config: cfg)
+    }
+
+    /// Normalized API host for a repository, derived from its bound account's
+    /// endpoint (falling back to the first account). Used to match the repo to
+    /// the freshest validated credential on that host.
+    func credentialHost(for repo: Repository) -> String? {
+        let conn = AccountStore.shared.connections.first(where: { $0.id == repo.accountID })
+            ?? AccountStore.shared.connections.first
+        guard let endpoint = conn?.endpoint, !endpoint.isEmpty else { return nil }
+        return resolvedCredentialHost(endpoint: endpoint, override: "")
     }
 
     // MARK: - Display helpers

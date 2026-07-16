@@ -313,7 +313,7 @@ private struct AddAccountSheet: View {
 
     @State private var preset:   AccountPreset = .github
     @State private var name     = AccountPreset.github.defaultName
-    @State private var endpoint = AccountPreset.github.fixedEndpoint ?? ""
+    @State private var endpoint = ""
     @State private var token    = ""
     @State private var isSaving = false
 #if os(macOS)
@@ -349,9 +349,16 @@ private struct AddAccountSheet: View {
                         if name.isEmpty || name == oldPreset.defaultName {
                             name = newPreset.defaultName
                         }
-                        // Clear the custom endpoint field when switching away
-                        // from a preset that needs one.
-                        if newPreset.fixedEndpoint != nil {
+                        // Reset the endpoint so the new preset's API pattern
+                        // default is shown (e.g. the GitHub Enterprise
+                        // "https://…/api/v3" example) instead of a leftover
+                        // value from the previous preset — notably the read-only
+                        // https://api.github.com carried over from GitHub. A
+                        // genuinely typed custom endpoint is preserved.
+                        let isLeftover = endpoint.isEmpty
+                            || endpoint == (oldPreset.fixedEndpoint ?? "")
+                            || endpoint == oldPreset.endpointPlaceholder
+                        if isLeftover {
                             endpoint = ""
                         }
                     }
@@ -663,13 +670,13 @@ private struct GitCredentialHelperSection: View {
     }
 }
 
-private struct GitCredential {
+struct GitCredential {
     let host: String
     let username: String
     let password: String
 }
 
-private enum GitCredentialLookupResult {
+enum GitCredentialLookupResult {
     case success(GitCredential)
     case failure(String)
 }
@@ -685,7 +692,7 @@ private enum GitCredentialLookupResult {
 ///  2. Direct `SecItemCopyMatching` for `gh:<host>` generic passwords — handles
 ///     credentials stored by `gh auth login`.  The gh CLI creates these items
 ///     with an open ACL so no system confirmation dialog appears.
-private enum GitCredentialHelper {
+enum GitCredentialHelper {
 
     private static let helperCandidates: [String] = [
         "/Library/Developer/CommandLineTools/usr/libexec/git-core/git-credential-osxkeychain",
@@ -804,7 +811,7 @@ private enum GitCredentialHelper {
     }
 }
 
-private func resolvedCredentialHost(endpoint: String, override: String) -> String {
+func resolvedCredentialHost(endpoint: String, override: String) -> String {
     let trimmedOverride = override.trimmingCharacters(in: .whitespacesAndNewlines)
     if !trimmedOverride.isEmpty {
         return trimmedOverride

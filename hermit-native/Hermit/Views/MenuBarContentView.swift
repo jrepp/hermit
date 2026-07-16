@@ -552,6 +552,9 @@ struct MenuBarContentView: View {
         let loadedStates = states.filter { $0.prStatsLoadedAt != nil && !$0.isLoading && $0.issue == nil }
         let failedStates = states.filter { $0.issue != nil }
         let authFailureCount = failedStates.filter { state in
+            if let status = state.authStatus {
+                return status.isCredentialIssue
+            }
             guard let issue = state.issue else { return false }
             return isRepositoryAuthenticationIssue(issue)
         }.count
@@ -1171,6 +1174,10 @@ private struct RepoFilterRow: View {
                         .help("Refreshing repository RFCs")
                 }
 
+                if let badge = credentialBadge {
+                    badge
+                }
+
                 if isActive {
                     Text("Default")
                         .font(.caption2.weight(.semibold))
@@ -1213,6 +1220,38 @@ private struct RepoFilterRow: View {
     private var helpText: String {
         guard let issue = state?.issue else { return repo.fullName }
         return issue.helpText
+    }
+
+    /// A compact credential/auth-status indicator shown when the server reports
+    /// a credential-shaped failure. Drawn from the authoritative auth-status
+    /// endpoint rather than inferred from error text.
+    private var credentialBadge: AnyView? {
+        guard let status = state?.authStatus, status.isCredentialIssue else { return nil }
+        let icon: String
+        let tint: Color
+        let label: String
+        switch status.state {
+        case .authenticationRequired:
+            icon = "person.badge.key.fill"
+            tint = .orange
+            label = "Authentication required"
+        case .accessDenied:
+            icon = "exclamationmark.lock.fill"
+            tint = .red
+            label = "Access denied"
+        default:
+            return nil
+        }
+        let detail = [status.lastErrorMessage, status.remediation]
+            .compactMap { $0?.isEmpty == false ? $0 : nil }
+            .joined(separator: "\n\n")
+        return AnyView(
+            Image(systemName: icon)
+                .font(.caption2.weight(.semibold))
+                .foregroundStyle(tint)
+                .help(detail.isEmpty ? label : "\(label)\n\(detail)")
+                .accessibilityLabel(label)
+        )
     }
 }
 
@@ -3687,6 +3726,7 @@ private final class MenuBarDashboardStore: ObservableObject {
         var prStateCounts = PRStateCounts.empty
         var prStatsLoadedAt: Date? = nil
         var issue: MenuBarIssue? = nil
+        var authStatus: RepositoryAuthStatus? = nil
 
         var allRFCs: [RFC] { pullRequests + mainBranch }
         var priorityRFC: RFC? { pullRequests.first ?? mainBranch.first }
@@ -3745,6 +3785,15 @@ private final class MenuBarDashboardStore: ObservableObject {
         state.isLoading = true
         setState(state, for: repo, reason: "load-start")
 
+        // Refresh the stored credential for this repo's host from the Git
+        // credential helper so the sync uses the most up-to-date validated
+        // account token (macOS only; iPad proxies through the paired Mac).
+        #if os(macOS)
+        if let host = appState.credentialHost(for: repo) {
+            await AccountStore.shared.refreshBestCredential(forHost: host)
+        }
+        #endif
+
         guard let client = appState.makeAPIClient(for: repo) else {
             guard isCurrentGeneration(generation, for: repo.id) else { return }
             state.isLoading = false
@@ -3760,6 +3809,9 @@ private final class MenuBarDashboardStore: ObservableObject {
 
         do {
             let (mainFiles, prs, summary) = try await client.discoverRFCs()
+            // Best-effort: pull the server's authoritative credential/auth
+            // health (set during the sync above) for the dashboard badge.
+            let authStatus = try? await client.fetchAuthStatus()
             let mainRFCs = mainFiles.map {
                 RFC(id: $0.id, title: $0.name, path: $0.path, sha: $0.sha,
                     source: .mainBranch, lifecycleStatus: $0.lifecycleStatus,
@@ -3802,7 +3854,8 @@ private final class MenuBarDashboardStore: ObservableObject {
                     pendingReviewCount: summary.pendingReviewCount,
                     openPRCount: summary.openPRCount,
                     prStateCounts: summary.prStateCounts,
-                    prStatsLoadedAt: syncedAt
+                    prStatsLoadedAt: syncedAt,
+                    authStatus: authStatus
                 ),
                 for: repo,
                 reason: "load-success"
@@ -3814,6 +3867,10 @@ private final class MenuBarDashboardStore: ObservableObject {
             }
             state.isLoading = false
             state.issue = menuIssue(for: error)
+            // The failed sync persisted a classified error code server-side;
+            // fetch it so the dashboard can show the authoritative auth state
+            // (e.g. authentication_required) instead of inferring from the text.
+            state.authStatus = try? await client.fetchAuthStatus()
             // Propagate any SSO URL to AccountStore so the Settings account row
             // can surface the Authorize SSO link even when the /user probe
             // doesn't return an X-GitHub-SSO header.
