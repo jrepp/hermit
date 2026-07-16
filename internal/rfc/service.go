@@ -447,18 +447,50 @@ func (s *Service) ListRFCsByRepository(ctx context.Context, repositoryID string,
 	return response, nil
 }
 
+// classifySyncError maps a provider error from a repository RFC refresh to a
+// stable error code. Auth-shaped failures (expired/revoked PAT, SSO required)
+// are distinguished from generic provider errors so the dashboard can surface a
+// clear "authentication required" indication rather than a vague failure.
+func classifySyncError(err error) string {
+	if err == nil {
+		return ""
+	}
+	msg := strings.ToLower(err.Error())
+	// Rate limits surface as HTTP 403 but are transient provider errors, not
+	// access-control issues. Detect them before the 403/denied branch.
+	if strings.Contains(msg, "rate limit") {
+		return "provider_error"
+	}
+	switch {
+	case strings.Contains(msg, "401") ||
+		strings.Contains(msg, "bad credentials") ||
+		strings.Contains(msg, "credential") ||
+		strings.Contains(msg, "token"):
+		return "auth_failed"
+	case strings.Contains(msg, "403") ||
+		strings.Contains(msg, "forbidden") ||
+		strings.Contains(msg, "denied") ||
+		strings.Contains(msg, "saml") ||
+		strings.Contains(msg, "sso"):
+		return "access_denied"
+	default:
+		return "provider_error"
+	}
+}
+
 func (s *Service) cachedRepositoryRFCListAfterError(ctx context.Context, repositoryID, sourceKey string, ttl time.Duration, err error) (RepositoryRFCListResponse, bool) {
 	if s.workset == nil {
 		return RepositoryRFCListResponse{}, false
 	}
-	_ = s.workset.PutRepositoryRFCListError(ctx, repositoryID, sourceKey, "provider_error", err.Error())
+	code := classifySyncError(err)
+	_ = s.workset.PutRepositoryRFCListError(ctx, repositoryID, sourceKey, code, err.Error())
 	projection, ok, getErr := s.workset.GetAnyRepositoryRFCList(ctx, repositoryID, sourceKey, ttl)
 	if getErr != nil || !ok {
 		return RepositoryRFCListResponse{}, false
 	}
 	meta := projection.Cache
 	meta.Cached = true
-	meta.LastErrorCode = "provider_error"
+	meta.LastErrorCode = code
 	meta.LastErrorMessage = err.Error()
 	var cached RepositoryRFCListResponse
 	if decodeErr := json.Unmarshal(projection.Payload, &cached); decodeErr != nil {
@@ -967,8 +999,6 @@ func (s *Service) MergePR(ctx context.Context, repositoryID string, prNumber int
 		slog.Error("MergePR service: github merge failed", "owner", owner, "repo", name, "prNumber", prNumber, "error", err)
 		return MergePRResult{}, fmt.Errorf("merge PR: %w", err)
 	}
-
-
 
 	slog.Info("MergePR service: done", "owner", owner, "repo", name, "prNumber", prNumber, "merged", merged, "blockedByCI", blockedByCI)
 	return MergePRResult{Merged: merged, BlockedByCI: blockedByCI}, nil
