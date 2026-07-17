@@ -6,12 +6,23 @@ import Network
 // hermit-ogz: Server selection UI in iPad SettingsView
 // hermit-jmt: Remote URL configuration and health-check validation
 
+#if os(macOS)
+/// Selectable Settings tabs. Used by AppState.deepLinkSettingsTab to jump
+/// straight to a specific section (e.g. the Repository tab from the dashboard).
+enum SettingsTab: String, CaseIterable {
+    case general, account, repository, server, ai
+}
+#endif
+
 struct SettingsView: View {
     @EnvironmentObject private var appState: AppState
     let embedded: Bool
 
     // hermit-9ds: shown when any config change requires an app relaunch
     @State private var showRestartBanner = false
+    #if os(macOS)
+    @State private var selectedTab: SettingsTab = .general
+    #endif
 
     init(embedded: Bool = false) {
         self.embedded = embedded
@@ -34,25 +45,45 @@ struct SettingsView: View {
                 .background(Color.accentColor)
             }
 
-            TabView {
-#if os(macOS)
+            #if os(macOS)
+            TabView(selection: $selectedTab) {
                 GeneralSettingsTab()
                     .tabItem { Label("General", systemImage: "gearshape") }
+                    .tag(SettingsTab.general)
                 AccountSettingsTab()
                     .tabItem { Label("Account", systemImage: "person.circle") }
+                    .tag(SettingsTab.account)
                 RepositorySettingsTab()
                     .tabItem { Label("Repository", systemImage: "arrow.triangle.branch") }
-#endif
+                    .tag(SettingsTab.repository)
+                ServerSettingsTab()
+                    .tabItem { Label("Server", systemImage: "server.rack") }
+                    .tag(SettingsTab.server)
+                AISettingsTab()
+                    .tabItem { Label("AI", systemImage: "sparkles") }
+                    .tag(SettingsTab.ai)
+            }
+            #else
+            TabView {
                 ServerSettingsTab()
                     .tabItem { Label("Server", systemImage: "server.rack") }
                 AISettingsTab()
                     .tabItem { Label("AI", systemImage: "sparkles") }
             }
+            #endif
         }
 #if os(macOS)
         .frame(width: embedded ? nil : 600, height: embedded ? nil : 560)
 #endif
         // hermit-9ds: listen for config-change notifications from AccountStore/RepositoryStore
+        .onAppear {
+            #if os(macOS)
+            if let requested = appState.deepLinkSettingsTab {
+                selectedTab = requested
+                appState.deepLinkSettingsTab = nil
+            }
+            #endif
+        }
         .onReceive(NotificationCenter.default.publisher(for: .hermitRestartRequired)) { _ in
             showRestartBanner = true
             // Auto-dismiss after 4 s — covers cases where the port publisher
