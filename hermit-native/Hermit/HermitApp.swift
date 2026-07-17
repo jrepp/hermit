@@ -715,7 +715,8 @@ final class HermitRepoSubMenu: NSMenu, NSMenuDelegate {
                 let mainRFCs = mainFiles.map {
                     RFC(id: $0.id, title: $0.name, path: $0.path,
                         sha: $0.sha, source: .mainBranch,
-                        lifecycleStatus: $0.lifecycleStatus, htmlURL: $0.htmlURL)
+                        lifecycleStatus: $0.lifecycleStatus, htmlURL: $0.htmlURL,
+                        documentType: $0.documentType)
                 }.sorted { $0.title < $1.title }
 
                 // One entry per PR: deduplicate to the primary RFC document.
@@ -724,7 +725,8 @@ final class HermitRepoSubMenu: NSMenu, NSMenuDelegate {
                 let prRFCs = primaryPRs.map {
                     RFC(id: "pr-\($0.number)", title: $0.prTitle.isEmpty ? $0.title : $0.prTitle,
                         path: $0.documentPath, sha: $0.headSHA, source: .pullRequest($0),
-                        lifecycleStatus: nil, htmlURL: $0.htmlURL)
+                        lifecycleStatus: nil, htmlURL: $0.htmlURL,
+                        documentType: $0.documentType)
                 }.sorted { $0.title < $1.title }
                 guard !Task.isCancelled else { return }
                 self.loadState = .loaded(mainRFCs, prRFCs)
@@ -907,18 +909,32 @@ func primaryPRDocuments(from prs: [RFCPullRequest]) -> [RFCPullRequest] {
 /// (`rfc-index.md`), ADRs, PRDs, and any file without a numeric suffix
 /// immediately following the `rfc-` prefix.
 func isRFCDocumentPath(_ path: String) -> Bool {
+    isDocumentPath(path, docType: "rfc")
+}
+
+/// Generic docs-cms document-path check: true when `path` is a numbered
+/// `<docType>-NNN-slug.md` file (e.g. adr-003-…, prd-001-…, rfc-076-…, memo-002-…).
+/// Rejects index files and files without a numeric suffix after the prefix (ADR-011).
+func isDocumentPath(_ path: String, docType: String) -> Bool {
     guard let filename = path.split(separator: "/").last.map(String.init) else { return false }
     let lower = filename.lowercased()
-    guard lower.hasSuffix(".md"), lower.hasPrefix("rfc-") else { return false }
-    return lower.dropFirst(4).first?.isNumber == true
+    let prefix = docType.lowercased() + "-"
+    guard lower.hasSuffix(".md"), lower.hasPrefix(prefix) else { return false }
+    return lower.dropFirst(prefix.count).first?.isNumber == true
 }
 
 /// Extracts the RFC sequence number from a path like `docs-cms/rfcs/rfc-076-title.md` → 76.
 func rfcNumberFromPath(_ path: String) -> Int {
+    documentNumberFromPath(path, docType: "rfc")
+}
+
+/// Generic docs-cms sequence number from a `<docType>-NNN-…` path (ADR-011).
+func documentNumberFromPath(_ path: String, docType: String) -> Int {
     guard let filename = path.split(separator: "/").last.map(String.init) else { return 0 }
     let lower = filename.lowercased()
-    guard lower.hasPrefix("rfc-") else { return 0 }
-    let digits = lower.dropFirst(4).prefix(while: { $0.isNumber })
+    let prefix = docType.lowercased() + "-"
+    guard lower.hasPrefix(prefix) else { return 0 }
+    let digits = lower.dropFirst(prefix.count).prefix(while: { $0.isNumber })
     return Int(digits) ?? 0
 }
 

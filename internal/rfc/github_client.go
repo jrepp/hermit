@@ -166,14 +166,15 @@ func (c *HTTPGitHubRFCClient) ListRFCs(ctx context.Context, baseURL, owner, name
 
 	items := make([]CatalogItem, 0)
 	for _, item := range payload {
-		if item.Type != "file" || !isDocuchangoRFCFilename(item.Name) {
+		if item.Type != "file" || !isDocuchangoDocumentFilename(item.Name) {
 			continue
 		}
 		items = append(items, CatalogItem{
-			ID:      item.Path,
-			Title:   strings.TrimSuffix(item.Name, ".md"),
-			Path:    item.Path,
-			HTMLURL: item.HTMLURL,
+			ID:           item.Path,
+			Title:        strings.TrimSuffix(item.Name, ".md"),
+			Path:         item.Path,
+			HTMLURL:      item.HTMLURL,
+			DocumentType: docTypeFromDocumentFilename(item.Name),
 		})
 	}
 
@@ -1241,14 +1242,14 @@ func (c *HTTPGitHubRFCClient) listDocuchangoProjectRFCs(ctx context.Context, api
 			return nil, true, err
 		}
 		for _, filePath := range paths {
-			if !isDocuchangoRFCFilename(path.Base(filePath)) {
+			if !isDocuchangoDocumentFilename(path.Base(filePath)) {
 				continue
 			}
 			if _, ok := seen[filePath]; ok {
 				continue
 			}
 			seen[filePath] = struct{}{}
-			items = append(items, CatalogItem{ID: filePath, Title: strings.TrimSuffix(path.Base(filePath), ".md"), Path: filePath})
+			items = append(items, CatalogItem{ID: filePath, Title: strings.TrimSuffix(path.Base(filePath), ".md"), Path: filePath, DocumentType: docTypeFromDocumentFilename(path.Base(filePath))})
 		}
 	}
 
@@ -1262,14 +1263,14 @@ func (c *HTTPGitHubRFCClient) listDocuchangoProjectRFCs(ctx context.Context, api
 			return nil, true, err
 		}
 		for _, filePath := range paths {
-			if !isDocuchangoRFCFilename(path.Base(filePath)) || !matchDocuchangoGlob(target, filePath) {
+			if !isDocuchangoDocumentFilename(path.Base(filePath)) || !matchDocuchangoGlob(target, filePath) {
 				continue
 			}
 			if _, ok := seen[filePath]; ok {
 				continue
 			}
 			seen[filePath] = struct{}{}
-			items = append(items, CatalogItem{ID: filePath, Title: strings.TrimSuffix(path.Base(filePath), ".md"), Path: filePath})
+			items = append(items, CatalogItem{ID: filePath, Title: strings.TrimSuffix(path.Base(filePath), ".md"), Path: filePath, DocumentType: docTypeFromDocumentFilename(path.Base(filePath))})
 		}
 	}
 

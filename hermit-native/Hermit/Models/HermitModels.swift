@@ -9,6 +9,18 @@ struct RFCFile: Identifiable, Hashable {
     let sha: String
     let htmlURL: String
     let lifecycleStatus: String?  // "draft", "accepted", "implemented", "unknown"
+    let documentType: String  // docs-cms type: "rfc", "adr", "prd", "memo" (ADR-011)
+
+    init(id: String, name: String, path: String, sha: String, htmlURL: String,
+         lifecycleStatus: String?, documentType: String = "rfc") {
+        self.id = id
+        self.name = name
+        self.path = path
+        self.sha = sha
+        self.htmlURL = htmlURL
+        self.lifecycleStatus = lifecycleStatus
+        self.documentType = documentType
+    }
 }
 
 struct RFCPullRequest: Identifiable {
