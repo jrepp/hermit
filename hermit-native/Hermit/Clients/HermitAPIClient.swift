@@ -30,36 +30,6 @@ struct RepositoryRFCSummary {
     let prStateCounts: PRStateCounts
 }
 
-/// Authoritative credential/auth health for a repository, surfaced from the
-/// server's most recent sync outcome. Drives the dashboard auth-status badge.
-enum RepositoryAuthState: String, Decodable {
-    case healthy
-    case authenticationRequired = "authentication_required"
-    case accessDenied = "access_denied"
-    case refreshFailed = "refresh_failed"
-    case unknown
-
-    init(fromRaw value: String) {
-        self = RepositoryAuthState(rawValue: value) ?? .unknown
-    }
-}
-
-struct RepositoryAuthStatus {
-    let state: RepositoryAuthState
-    let method: String
-    let lastValidatedAt: String?
-    let lastSuccessfulRefreshAt: String?
-    let lastAttemptedRefreshAt: String?
-    let lastErrorCode: String?
-    let lastErrorMessage: String?
-    let remediation: String?
-
-    /// True when the stored credential is the root cause of sync failure.
-    var isCredentialIssue: Bool {
-        state == .authenticationRequired || state == .accessDenied
-    }
-}
-
 struct PRStateCounts {
     var ready = 0
     var conflicted = 0

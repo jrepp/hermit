@@ -3854,9 +3854,8 @@ private final class MenuBarDashboardStore: ObservableObject {
                     htmlURL: $0.htmlURL,
                     documentType: $0.documentType)
             }.sorted { $0.title < $1.title }
-            // One entry per PR: filter to the primary RFC document using the
-            // same deduplication logic as the native menu (documentType == "rfc",
-            // rfc-NNN path, non-terminal lifecycle status, highest RFC number wins).
+            // Select one primary docs-cms document per PR, preferring an
+            // actionable lifecycle status with the native menu's shared ordering.
             let prRFCs = primaryPRDocuments(from: prs).map {
                 RFC(id: $0.catalogID, title: $0.prTitle.isEmpty ? $0.title : $0.prTitle,
                     path: $0.documentPath, sha: $0.headSHA,
@@ -3875,20 +3874,32 @@ private final class MenuBarDashboardStore: ObservableObject {
                 menuBarDebugLog("[MenuBarDashboardStore] load stale-success ignored repo=\(repo.fullName) generation=\(generation)")
                 return
             }
-            let syncedAt = Date()
-            let sections = RepoRFCLoader.RFCSections(
-                mainBranch: mainRFCs,
-                pullRequests: prRFCs,
-                summary: summary,
-                loadedAt: syncedAt
-            )
-            RepoRFCCache.shared.store(sections, for: repo.id)
+            let refreshIssue = authStatus.flatMap { menuIssue(for: $0) }
+            let syncedAt: Date?
+            if let authStatus {
+                syncedAt = authStatus.successfulRefreshDate(observedAt: Date(), cachedAt: state.prStatsLoadedAt)
+            } else {
+                syncedAt = Date()
+            }
+            if let syncedAt {
+                let sections = RepoRFCLoader.RFCSections(
+                    mainBranch: mainRFCs,
+                    pullRequests: prRFCs,
+                    summary: summary,
+                    loadedAt: syncedAt
+                )
+                RepoRFCCache.shared.store(sections, for: repo.id)
+            }
 #if os(macOS)
             // hermit-txn: retry a deep link that arrived before this repo's RFCs loaded.
             RFCViewerWindowManager.shared.resolvePendingDeepLink(in: mainRFCs + prRFCs, repo: repo, appState: appState)
 #endif
-            RepositoryStore.shared.markSynced(repo, at: syncedAt)
-            stats.recordSuccess()
+            if refreshIssue != nil {
+                stats.recordFailure()
+            } else {
+                if let syncedAt { RepositoryStore.shared.markSynced(repo, at: syncedAt) }
+                stats.recordSuccess()
+            }
             setState(
                 RepoState(
                     isLoading: false,
@@ -3898,10 +3909,11 @@ private final class MenuBarDashboardStore: ObservableObject {
                     openPRCount: summary.openPRCount,
                     prStateCounts: summary.prStateCounts,
                     prStatsLoadedAt: syncedAt,
+                    issue: refreshIssue,
                     authStatus: authStatus
                 ),
                 for: repo,
-                reason: "load-success"
+                reason: refreshIssue == nil ? "load-success" : "load-cached-error"
             )
         } catch {
             guard isCurrentGeneration(generation, for: repo.id) else {
@@ -4116,6 +4128,19 @@ private func menuIssue(for error: Error) -> MenuBarIssue {
     }
 
     return MenuBarIssue(title: "Git integration error", shortTitle: "Git", message: menuErrorMessage(error), recovery: "Retry the request. If it persists, inspect repo access, branch state, and backend logs.", systemImage: "exclamationmark.triangle", tint: .orange)
+}
+
+private func menuIssue(for status: RepositoryAuthStatus) -> MenuBarIssue? {
+    guard status.hasRefreshFailure else { return nil }
+    let message = status.lastErrorMessage.flatMap { $0.isEmpty ? nil : $0 }
+        ?? "The last repository refresh failed. Showing cached documents when available."
+    let code: Int
+    switch status.state {
+    case .authenticationRequired: code = 401
+    case .accessDenied: code = 403
+    default: code = 500
+    }
+    return menuIssue(forHTTPStatus: code, message: message)
 }
 
 private func menuIssue(forHTTPStatus statusCode: Int?, message: String) -> MenuBarIssue {
