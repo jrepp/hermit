@@ -2,6 +2,7 @@
 title: Generic Doc Store for All Docuchango Document Types
 status: Proposed
 created: 2026-07-16T00:00:00Z
+updated: 2026-10-14T00:00:00Z
 deciders: Engineering Team
 tags: [architecture, catalog, docs, native]
 id: adr-011
@@ -22,11 +23,11 @@ A "store that can deal with any docs-cms doc type cleanly" therefore requires th
 
 Generalize the RFC catalog into a **doc-type-aware document store** across server and native, in a foundation pass that keeps the existing `RFC*` Swift symbols as aliases (a cosmetic `RFC`→`Doc` rename is deferred to a later PR to limit churn).
 
-1. **Server: serve all configured doc types on the main branch.** Replace the `isDocuchangoRFCFilename` gate on the main-branch path with the existing `docuchangoDocumentMatcher` plus a generic `prefix-NNN-slug.md` check. The Docuchango project config (`document_folders` / `*_dir` / `doc_types`) already enumerates which folders to scan; the server walks every configured folder instead of only `docs-cms/rfcs`. The default docs root moves from `docs-cms/rfcs` to `docs-cms` so all folders are visible.
+1. **Server: serve all configured doc types on the main branch.** Replace the `isDocuchangoRFCFilename` gate on the main-branch path with the existing `docuchangoDocumentMatcher` plus a generic `prefix-NNN-slug.md` check. The Docuchango project config (`document_folders` / `*_dir` / `doc_types`) already enumerates which folders to scan; the server walks every configured folder instead of only `docs-cms/rfcs`. Existing repository `docs_path` values remain compatible: project-config discovery scans all declared document folders regardless of the fallback path.
 
 2. **Native: retain `documentType` end to end.** Add `documentType: String` to `RFCFile` and to the unified `RFC`, and stop dropping it in `discoverRFCs()` decoding. Thread it through the cache wrappers so it persists across launches.
 
-3. **Native: introduce a doc-type-aware store.** Generalize `RepoRFCCache` into a `DocStore` keyed by `(repoID, documentType)`, exposing per-type sections and a per-repo aggregate. The persisted UserDefaults key migrates from `hermit.menuBar.rfcProjectionCache.v1` to `…docProjectionCache.v2` (versioned so old caches do not decode as the wrong shape). `RFCSections`/`RepoRFCCache` remain as typealias aliases to the new types for this pass.
+3. **Native: introduce a doc-type-aware store.** Expose `DocStore` as an alias of `RepoRFCCache`, retaining one cache entry per repository and providing document-type-filtered sections and a per-repo aggregate. The persisted UserDefaults key migrates from `hermit.menuBar.rfcProjectionCache.v1` to `…docProjectionCache.v2` (versioned so old caches do not decode as the wrong shape). Existing `RFCSections` and `RepoRFCCache` names remain available for this pass.
 
 4. **Native: generalize the RFC filename helpers.** Replace `isRFCDocumentPath`/`rfcNumberFromPath`/`primaryPRDocuments` with doc-type-parameterized equivalents (`isDocumentPath(_:docType:)`, `documentNumberFromPath(_:docType:)`) keyed off the same `prefix-NNN` convention the server's `fallbackDocuchangoDocTypes` already assumes (adr/memo/prd/rfc).
 

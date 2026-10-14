@@ -84,8 +84,8 @@ func (h *Handler) GetAuthStatus(w http.ResponseWriter, r *http.Request) {
 
 // deriveState maps the stored cache + validation fields to a dashboard state.
 // The workset cache is authoritative when present because it reflects the most
-// recent live GitHub probe; the validation metadata is a fallback for
-// repositories that have never been refreshed.
+// recent live provider refresh. Validation timestamps are informational;
+// repositories that have never been refreshed remain unknown.
 func deriveState(resp Response) string {
 	switch resp.LastErrorCode {
 	case "auth_failed":

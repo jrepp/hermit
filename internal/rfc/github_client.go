@@ -355,7 +355,6 @@ func (c *HTTPGitHubRFCClient) ListReviewReadyRFCs(ctx context.Context, baseURL, 
 	if docsPath == "" {
 		docsPath = "docs-cms/rfcs"
 	}
-	
 
 	// Query PRs and inspect changed files client-side. Some providers
 	// (for example Gitea) do not support string label filters on this endpoint.
@@ -393,7 +392,7 @@ func (c *HTTPGitHubRFCClient) ListReviewReadyRFCs(ctx context.Context, baseURL, 
 		}
 		err error
 	}
-	openCh   := make(chan prFetchErr, 1)
+	openCh := make(chan prFetchErr, 1)
 	closedCh := make(chan prFetchErr, 1)
 	go func() {
 		prs, err := c.fetchPaginatedPRs(ctx, apiBase, owner, name, "open", "", token)
@@ -406,7 +405,7 @@ func (c *HTTPGitHubRFCClient) ListReviewReadyRFCs(ctx context.Context, baseURL, 
 		prs, err := c.fetchPaginatedPRs(ctx, apiBase, owner, name, "closed", "", token)
 		closedCh <- prFetchErr{prs, err}
 	}()
-	openFetch   := <-openCh
+	openFetch := <-openCh
 	closedFetch := <-closedCh
 	if openFetch.err != nil {
 		return ReviewReadyRFCResult{}, openFetch.err
@@ -450,7 +449,7 @@ func (c *HTTPGitHubRFCClient) ListReviewReadyRFCs(ctx context.Context, baseURL, 
 
 	// Pre-filter candidates.
 	type prEntry struct {
-		pr    struct {
+		pr struct {
 			Number         int    `json:"number"`
 			Title          string `json:"title"`
 			Body           string `json:"body"`
@@ -496,7 +495,7 @@ func (c *HTTPGitHubRFCClient) ListReviewReadyRFCs(ctx context.Context, baseURL, 
 		draft      bool
 	}
 	outcomes := make([]prOutcome, len(candidates))
-	sem      := make(chan struct{}, 8)
+	sem := make(chan struct{}, 8)
 	var wg sync.WaitGroup
 	for i, cand := range candidates {
 		wg.Add(1)
@@ -505,11 +504,11 @@ func (c *HTTPGitHubRFCClient) ListReviewReadyRFCs(ctx context.Context, baseURL, 
 			sem <- struct{}{}
 			defer func() { <-sem }()
 
-			pr      := cand.pr
+			pr := cand.pr
 			prState := cand.prState
-			mergeable     := pr.Mergeable
+			mergeable := pr.Mergeable
 			mergeableState := strings.TrimSpace(pr.MergeableState)
-			merged        := pr.Merged
+			merged := pr.Merged
 			if (mergeable == nil && mergeableState == "") || prState != "open" {
 				if dm, ds, dmerged, derr := c.getPullRequestMergeState(ctx, apiBase, owner, name, pr.Number, token); derr == nil {
 					mergeable, mergeableState, merged = dm, ds, dmerged
@@ -532,8 +531,8 @@ func (c *HTTPGitHubRFCClient) ListReviewReadyRFCs(ctx context.Context, baseURL, 
 				Additions    int
 				DocumentType string
 			}
-			var documents  []reviewDocument
-			documentSeen  := map[string]struct{}{}
+			var documents []reviewDocument
+			documentSeen := map[string]struct{}{}
 			prAdditions, prDeletions := 0, 0
 			for _, prFile := range prFiles {
 				prAdditions += prFile.Additions
@@ -553,7 +552,8 @@ func (c *HTTPGitHubRFCClient) ListReviewReadyRFCs(ctx context.Context, baseURL, 
 						workflowLabels[docuchangoWorkflowLabel(dt, docuchangoWorkflowStateNeedsReview)] = struct{}{}
 					}
 					docType := primaryReviewDocumentType(docTypes)
-					_, seenSrc := documentSeen[sourcePath]; if docType == "" || seenSrc {
+					_, seenSrc := documentSeen[sourcePath]
+					if docType == "" || seenSrc {
 						continue
 					}
 					documentSeen[sourcePath] = struct{}{}
@@ -569,7 +569,8 @@ func (c *HTTPGitHubRFCClient) ListReviewReadyRFCs(ctx context.Context, baseURL, 
 					workflowLabels[docuchangoWorkflowLabel(dt, docuchangoWorkflowStateNeedsReview)] = struct{}{}
 				}
 				docType := primaryReviewDocumentType(docTypes)
-				_, seenPR := documentSeen[prFile.Filename]; if docType == "" || seenPR {
+				_, seenPR := documentSeen[prFile.Filename]
+				if docType == "" || seenPR {
 					continue
 				}
 				documentSeen[prFile.Filename] = struct{}{}
@@ -610,7 +611,7 @@ func (c *HTTPGitHubRFCClient) ListReviewReadyRFCs(ctx context.Context, baseURL, 
 					Mergeable: mergeable, MergeableState: mergeableState,
 					HTMLURL: pr.HTMLURL, Title: title, Path: doc.Filename,
 					DocumentType: doc.DocumentType, LifecycleStatus: lifecycleStatus,
-					Labels: labelNames,
+					Labels:       labelNames,
 					ChangedFiles: len(prFiles), Additions: prAdditions, Deletions: prDeletions,
 					IssueComments: pr.Comments, ReviewComments: pr.ReviewComments,
 				})
@@ -1236,7 +1237,7 @@ func (c *HTTPGitHubRFCClient) listDocuchangoProjectRFCs(ctx context.Context, api
 
 	seen := map[string]struct{}{}
 	items := make([]CatalogItem, 0)
-	for _, root := range rfcRootsFromDocuchangoContexts(contexts) {
+	for _, root := range documentRootsFromDocuchangoContexts(contexts) {
 		paths, err := c.listMarkdownFiles(ctx, apiBase, owner, name, branch, root, token)
 		if err != nil {
 			return nil, true, err
@@ -1502,6 +1503,21 @@ func (c *HTTPGitHubRFCClient) listMarkdownFiles(ctx context.Context, apiBase, ow
 		}
 	}
 	return files, nil
+}
+
+// Use the same folder rules as PR discovery so published ADRs, PRDs and memos
+// are included in the catalog as well as RFCs.
+func documentRootsFromDocuchangoContexts(contexts []docuchangoProjectContext) []string {
+	seen := map[string]bool{}
+	var roots []string
+	for _, rule := range docuchangoMatcherFromContexts(contexts).rules {
+		if rule.root != "" && !seen[rule.root] {
+			seen[rule.root] = true
+			roots = append(roots, rule.root)
+		}
+	}
+	sort.Strings(roots)
+	return roots
 }
 
 func rfcRootsFromDocuchangoContexts(contexts []docuchangoProjectContext) []string {

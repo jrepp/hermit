@@ -33,7 +33,6 @@ struct MenuBarContentView: View {
         anchorScreenX: CGFloat? = nil,
         managesWindowPresentation: Bool = true,
         allowsDetach: Bool = true,
-        openToSettings: Bool = false,
         onOpenReview: @escaping () -> Void = {},
         onDetach: @escaping () -> Void = {},
         onClose: @escaping () -> Void = {}
@@ -44,7 +43,7 @@ struct MenuBarContentView: View {
         self.onOpenReview = onOpenReview
         self.onDetach = onDetach
         self.onClose = onClose
-        _selectedView = State(initialValue: openToSettings ? .settings : .dashboard)
+        _selectedView = State(initialValue: .dashboard)
         _menuAnchor = State(initialValue: MenuBarBubbleAnchor.capture(anchorScreenX))
         _pointerX = State(initialValue: managesWindowPresentation ? MenuBarBubbleWindowController.fallbackPointerX : 280)
     }
@@ -144,7 +143,7 @@ struct MenuBarContentView: View {
                 IssueBanner(issue: issue, compact: true, onRetry: {
                     Task { await refreshAll(force: true) }
                 }, onSettings: {
-                    selectedView = .settings
+                    SettingsWindowManager.shared.open(appState: appState)
                 })
             }
         }
@@ -155,11 +154,10 @@ struct MenuBarContentView: View {
         Picker("View", selection: $selectedView) {
             Label("Dashboard", systemImage: "rectangle.grid.2x2").tag(MenuBarPrimaryView.dashboard)
             Label("Monitor", systemImage: "waveform.path.ecg").tag(MenuBarPrimaryView.monitoring)
-            Label("Settings", systemImage: "gearshape").tag(MenuBarPrimaryView.settings)
         }
         .pickerStyle(.segmented)
         .labelsHidden()
-        .frame(width: renderMode == .compact ? 280 : 300)
+        .frame(width: renderMode == .compact ? 200 : 220)
     }
 
     @ViewBuilder
@@ -186,13 +184,13 @@ struct MenuBarContentView: View {
                 }
 
                 Button {
-                    NewRFCWindowManager.shared.open(appState: appState)
+                    SettingsWindowManager.shared.open(appState: appState)
                 } label: {
-                    Label("New RFC", systemImage: "plus")
+                    Label("Settings", systemImage: "gearshape")
                 }
                 .labelStyle(.iconOnly)
-                .help("New RFC")
-                .buttonStyle(.borderedProminent)
+                .help("Settings")
+                .buttonStyle(.bordered)
             }
         } else {
             HStack(spacing: 8) {
@@ -215,11 +213,12 @@ struct MenuBarContentView: View {
                 }
 
                 Button {
-                    NewRFCWindowManager.shared.open(appState: appState)
+                    SettingsWindowManager.shared.open(appState: appState)
                 } label: {
-                    Label("New RFC", systemImage: "plus")
+                    Label("Settings", systemImage: "gearshape")
                 }
-                .buttonStyle(.borderedProminent)
+                .buttonStyle(.bordered)
+                .help("Settings")
             }
         }
     }
@@ -242,9 +241,6 @@ struct MenuBarContentView: View {
                 dashboardStats: dashboardStore.stats,
                 states: dashboardStore.statesSnapshot
             )
-        case .settings:
-            SettingsView(embedded: true)
-                .environmentObject(appState)
         }
     }
 
@@ -268,7 +264,7 @@ struct MenuBarContentView: View {
                         prStatsFreshness: aggregatePRStatsFreshness,
                         serverStatusText: serverStatusText,
                         serverStatusColor: serverStatusColor,
-                        onOpenSettings: { appState.deepLinkSettingsTab = .repository; selectedView = .settings }
+                        onOpenSettings: openRepositorySettings
                     )
 
                     CompactReviewQueue(
@@ -366,7 +362,7 @@ struct MenuBarContentView: View {
                         repoCount: displayedRepos.count,
                         loadedCount: loadedRepositoryCount,
                         prStatsFreshness: aggregatePRStatsFreshness,
-                        onOpenSettings: { appState.deepLinkSettingsTab = .repository; selectedView = .settings }
+                        onOpenSettings: openRepositorySettings
                     )
                     PRReviewSection(
                         title: "Review queue",
@@ -382,7 +378,7 @@ struct MenuBarContentView: View {
                         isActive: repo.id == repoStore.repositories.first?.id,
                         onActivate: { activate(repo) },
                         onRefresh: { Task { await dashboardStore.reload(repo: repo, appState: appState) } },
-                        onOpenSettings: { appState.deepLinkSettingsTab = .repository; selectedView = .settings },
+                        onOpenSettings: openRepositorySettings,
                         onOpenPR: { rfc in open(rfc, in: repo) },
                         onOpen: { rfc in open(rfc, in: repo) }
                     )
@@ -630,6 +626,11 @@ struct MenuBarContentView: View {
         await refreshDashboard(force: force)
     }
 
+    private func openRepositorySettings() {
+        appState.deepLinkSettingsTab = .repository
+        SettingsWindowManager.shared.open(appState: appState)
+    }
+
     private func activate(_ repo: Repository) {
         RepositoryStore.shared.setActive(repo)
         selectedRepoID = repo.id
@@ -844,7 +845,6 @@ private enum MenuBarBubbleWindowController {
 private enum MenuBarPrimaryView {
     case dashboard
     case monitoring
-    case settings
 }
 
 private enum MenuBarRenderMode {
@@ -3724,7 +3724,7 @@ private final class ServerRepositoryMenuStore: ObservableObject {
                     name: item.name,
                     docsPath: item.docsPath,
                     rfcLabel: item.rfcLabel,
-                    team: existing?.team ?? item.team ?? ""
+                    team: item.team ?? existing?.team ?? ""
                 )
             }
             repositories = nextRepositories
@@ -3829,15 +3829,6 @@ private final class MenuBarDashboardStore: ObservableObject {
         state.isLoading = true
         setState(state, for: repo, reason: "load-start")
 
-        // Refresh the stored credential for this repo's host from the Git
-        // credential helper so the sync uses the most up-to-date validated
-        // account token (macOS only; iPad proxies through the paired Mac).
-        #if os(macOS)
-        if let host = appState.credentialHost(for: repo) {
-            await AccountStore.shared.refreshBestCredential(forHost: host)
-        }
-        #endif
-
         guard let client = appState.makeAPIClient(for: repo) else {
             guard isCurrentGeneration(generation, for: repo.id) else { return }
             state.isLoading = false
@@ -3892,6 +3883,10 @@ private final class MenuBarDashboardStore: ObservableObject {
                 loadedAt: syncedAt
             )
             RepoRFCCache.shared.store(sections, for: repo.id)
+#if os(macOS)
+            // hermit-txn: retry a deep link that arrived before this repo's RFCs loaded.
+            RFCViewerWindowManager.shared.resolvePendingDeepLink(in: mainRFCs + prRFCs, repo: repo, appState: appState)
+#endif
             RepositoryStore.shared.markSynced(repo, at: syncedAt)
             stats.recordSuccess()
             setState(
@@ -3919,6 +3914,7 @@ private final class MenuBarDashboardStore: ObservableObject {
             // fetch it so the dashboard can show the authoritative auth state
             // (e.g. authentication_required) instead of inferring from the text.
             state.authStatus = try? await client.fetchAuthStatus()
+            guard isCurrentGeneration(generation, for: repo.id) else { return }
             // Propagate any SSO URL to AccountStore so the Settings account row
             // can surface the Authorize SSO link even when the /user probe
             // doesn't return an X-GitHub-SSO header.

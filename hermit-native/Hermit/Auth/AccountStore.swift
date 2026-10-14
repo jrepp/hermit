@@ -171,7 +171,7 @@ final class AccountStore: ObservableObject {
     /// Idempotently inserts or updates a connection derived from a shared
     /// catalog (`SharedConfigStore`), keyed by a stable UUID. Preserves any
     /// existing token. Does NOT post `.hermitRestartRequired` — called during
-    /// app init, before the server starts. See ADR-010.
+    /// app init, before the server starts. See ADR-012.
     func upsertShared(id: UUID, name: String, endpoint: String) {
         if let idx = connections.firstIndex(where: { $0.id == id }) {
             var existing = connections[idx]
@@ -252,18 +252,27 @@ final class AccountStore: ObservableObject {
             .trimmingCharacters(in: .whitespacesAndNewlines)
             .trimmingCharacters(in: CharacterSet(charactersIn: "/"))
 
-        // GitHub  → GET /user          (authenticated; returns 401 on bad/missing token)
-        // Gitea   → GET /api/v1/user   (authenticated; same behaviour as GitHub)
-        // Other   → GET /api/v1/health (unauthenticated reachability check only)
+        // GitHub (api.github.com, /api/v3)  → GET {base}/user          (authenticated)
+        // Gitea API base (/api/v1 in path)  → GET {base}/user          (authenticated)
+        // Gitea web base (no API path)      → GET {base}/api/v1/user   (authenticated)
         let isGitHub = Self.isGitHubAPIEndpoint(base)
-        let isGitea  = Self.isGiteaEndpoint(base)
-        let healthPath: String
-        if isGitHub || isGitea {
-            healthPath = "/user"
+        let probeURL: URL?
+        if isGitHub {
+            probeURL = URL(string: "\(base)/user")
         } else {
-            healthPath = "/api/v1/health"
+            // Treat any non-GitHub URL as Gitea/Forgejo-compatible — they all
+            // expose GET /api/v1/user as an authenticated identity endpoint.
+            // If the endpoint already has /api/v1 in the path, append just /user;
+            // otherwise append the full /api/v1/user path.
+            let urlPath = URL(string: base)?.path
+                .lowercased()
+                .trimmingCharacters(in: CharacterSet(charactersIn: "/")) ?? ""
+            let isAPIBase = urlPath == "api/v1" || urlPath.hasSuffix("/api/v1")
+            probeURL = isAPIBase
+                ? URL(string: "\(base)/user")
+                : URL(string: "\(base)/api/v1/user")
         }
-        guard let url = URL(string: "\(base)\(healthPath)") else { return }
+        guard let url = probeURL else { return }
 
         var req = URLRequest(url: url, timeoutInterval: 8)
         if let token = token(for: connection) {
@@ -278,7 +287,6 @@ final class AccountStore: ObservableObject {
                 connectedIDs.insert(connection.id)
                 probeErrors.removeValue(forKey: connection.id)
                 ssoURLs.removeValue(forKey: connection.id)
-                lastValidatedAt[connection.id] = Date()
             } else {
                 connectedIDs.remove(connection.id)
                 let body      = String(data: data, encoding: .utf8) ?? ""
@@ -327,59 +335,10 @@ final class AccountStore: ObservableObject {
         return extractSAMLURL(from: body) ?? extractSAMLURLFromHeader(ssoHeader)
     }
 
-    // MARK: - Host-based credential resolution
-
-    /// Connections whose normalized API host matches `host` (e.g. "github.com"
-    /// or an enterprise hostname). Used to resolve the freshest credential for
-    /// a repo sync when the repo's bound account is stale or absent.
-    func connections(forHost host: String) -> [Connection] {
-        let normalized = host.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        guard !normalized.isEmpty else { return [] }
-        return connections.filter {
-            resolvedCredentialHost(endpoint: $0.endpoint, override: "").lowercased() == normalized
-        }
-    }
-
-    /// The most recently validated connection for `host`, preferring connected
-    /// accounts. Returns nil when no account matches the host.
-    func bestConnection(forHost host: String) -> Connection? {
-        let matches = connections(forHost: host)
-        guard !matches.isEmpty else { return nil }
-        let byFreshness: (Connection, Connection) -> Bool = { a, b in
-            (self.lastValidatedAt[a.id] ?? .distantPast) < (self.lastValidatedAt[b.id] ?? .distantPast)
-        }
-        if let best = matches.filter({ isConnected($0) }).max(by: byFreshness) {
-            return best
-        }
-        return matches.max(by: byFreshness)
-    }
-
-    #if os(macOS)
-    /// Best-effort: re-read the local Git credential helper for `host` and, if
-    /// it returns a different password than the stored one, update the best
-    /// validated account on that host. Lets repo sync use the most up-to-date
-    /// credential without a manual token rotation.
-    func refreshBestCredential(forHost host: String) async {
-        let normalized = host.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        guard !normalized.isEmpty else { return }
-        let result = await GitCredentialHelper.lookup(host: normalized)
-        guard case .success(let credential) = result, !credential.password.isEmpty else { return }
-        let target = bestConnection(forHost: normalized) ?? connections(forHost: normalized).first
-        guard let target = target else { return }
-        let current = token(for: target) ?? ""
-        guard credential.password != current else { return }
-        KeychainHelper.shared.writeAccountToken(credential.password, key: target.keychainKey)
-        objectWillChange.send()
-    }
-    #endif
-
     // MARK: - Private
 
     private var connectedIDs: Set<UUID> = []
     private var probeErrors:  [UUID: ProbeError] = [:]
-    /// Most recent successful probe timestamp per account, used to pick the
-    /// freshest validated credential when multiple accounts share a host.
-    private(set) var lastValidatedAt: [UUID: Date] = [:]
 
     private func probeMessage(statusCode: Int?, body: String, ssoHeader: String? = nil, ssoURL: URL? = nil) -> String {
         // SAML SSO takes priority — detected via header, body, or repo probe.
@@ -429,20 +388,6 @@ final class AccountStore: ObservableObject {
             host.contains(".github.") ||
             path == "api/v3" ||
             path.hasSuffix("/api/v3")
-    }
-
-    /// True for self-hosted Gitea instances.  Gitea exposes GET /api/v1/user
-    /// as an authenticated endpoint (returns 401 on bad/missing token), which
-    /// gives us proper credential validation rather than the unauthenticated
-    /// /api/v1/health check.
-    private static func isGiteaEndpoint(_ endpoint: String) -> Bool {
-        guard let url = URL(string: endpoint),
-              let host = url.host?.lowercased() else { return false }
-        // Localhost Gitea dev instances
-        if host == "localhost" || host == "127.0.0.1" { return true }
-        // Explicit /api/v1 path is the Gitea API base convention
-        let path = url.path.lowercased().trimmingCharacters(in: CharacterSet(charactersIn: "/"))
-        return path == "api/v1" || path.hasSuffix("/api/v1")
     }
 
     private func save() {
@@ -571,7 +516,7 @@ final class RepositoryStore: ObservableObject {
     /// Idempotently inserts or updates a repository derived from a shared
     /// catalog (`SharedConfigStore`), matched by accountID + owner + name so
     /// the existing UUID (and any open RFC windows) stay valid. Does NOT post
-    /// `.hermitRestartRequired` — called during app init. See ADR-010.
+    /// `.hermitRestartRequired` — called during app init. See ADR-012.
     func upsertShared(accountID: UUID, owner: String, name: String,
                       docsPath: String, rfcLabel: String, team: String = "") {
         if let idx = repositories.firstIndex(where: {

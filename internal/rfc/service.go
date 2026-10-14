@@ -328,12 +328,16 @@ func (s *Service) ListRFCsByRepository(ctx context.Context, repositoryID string,
 	if !ok {
 		return RepositoryRFCListResponse{}, fmt.Errorf("repository not found")
 	}
-	if token == "" {
-		return RepositoryRFCListResponse{}, fmt.Errorf("repository token unavailable")
-	}
 	baseURL := s.registryBaseURL(registry, repoBaseURL)
 	sourceKey := repositoryRFCListSourceKey(registry, baseURL, owner, name, branch, docsPath)
 	cacheTTL := s.repositoryRFCListCacheTTL(repositoryID)
+	if token == "" {
+		err := fmt.Errorf("repository token unavailable")
+		if cached, ok := s.cachedRepositoryRFCListAfterError(ctx, repositoryID, sourceKey, cacheTTL, err); ok {
+			return cached, nil
+		}
+		return RepositoryRFCListResponse{}, err
+	}
 	if s.workset != nil && !refresh {
 		if projection, ok, err := s.workset.GetFreshRepositoryRFCList(ctx, repositoryID, sourceKey, cacheTTL); err == nil && ok {
 			var cached RepositoryRFCListResponse
@@ -376,6 +380,7 @@ func (s *Service) ListRFCsByRepository(ctx context.Context, repositoryID string,
 				Title:           title,
 				Path:            item.Path,
 				SourceType:      "main",
+				DocumentType:    item.DocumentType,
 				SourceLabel:     "Main branch",
 				AllowedActions:  []string{"view"},
 				LifecycleStatus: lifecycleStatus,
@@ -407,7 +412,7 @@ func (s *Service) ListRFCsByRepository(ctx context.Context, repositoryID string,
 	for _, prItem := range prResult.Items {
 		items = append(items, CatalogItem{
 			ID:              makePRCatalogID(prItem.PRNumber, prItem.Path),
-			Title:           prItem.Title,
+			Title:           normalizeRFCTitle(prItem.Title, prItem.Path),
 			Path:            prItem.Path,
 			SourceType:      "pull_request",
 			SourceLabel:     fmt.Sprintf("PR #%d", prItem.PRNumber),
@@ -486,9 +491,7 @@ func classifySyncError(err error) string {
 	}
 	switch {
 	case strings.Contains(msg, "401") ||
-		strings.Contains(msg, "bad credentials") ||
-		strings.Contains(msg, "credential") ||
-		strings.Contains(msg, "token"):
+		strings.Contains(msg, "bad credentials"):
 		return "auth_failed"
 	case strings.Contains(msg, "403") ||
 		strings.Contains(msg, "forbidden") ||
@@ -496,6 +499,11 @@ func classifySyncError(err error) string {
 		strings.Contains(msg, "saml") ||
 		strings.Contains(msg, "sso"):
 		return "access_denied"
+	case strings.Contains(msg, "token unavailable") ||
+		strings.Contains(msg, "token revoked") ||
+		strings.Contains(msg, "token expired") ||
+		strings.Contains(msg, "credential helper returned empty"):
+		return "auth_failed"
 	default:
 		return "provider_error"
 	}

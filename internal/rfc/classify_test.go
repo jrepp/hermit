@@ -20,6 +20,8 @@ func TestClassifySyncError(t *testing.T) {
 		{"denied", errors.New("access denied to resource"), "access_denied"},
 		{"saml sso", errors.New("403 SAML SSO authorization required"), "access_denied"},
 		{"rate limit", errors.New("403 API rate limit exceeded"), "provider_error"},
+		{"token permission", errors.New("403 Forbidden: token lacks access"), "access_denied"},
+		{"token filename", errors.New("fetch token-guide.md failed: 500 Internal Server Error"), "provider_error"},
 		{"network", errors.New("dial tcp: connection refused"), "provider_error"},
 	}
 	for _, tc := range cases {

@@ -1,5 +1,6 @@
 import SwiftUI
 import Network
+import UniformTypeIdentifiers
 
 // MARK: - SettingsView
 // hermit-3wh: Server settings tab (macOS — mode selector, Bonjour list stub, remote URL)
@@ -10,7 +11,7 @@ import Network
 /// Selectable Settings tabs. Used by AppState.deepLinkSettingsTab to jump
 /// straight to a specific section (e.g. the Repository tab from the dashboard).
 enum SettingsTab: String, CaseIterable {
-    case general, account, repository, server, ai
+    case general, account, repository, server
 }
 #endif
 
@@ -59,16 +60,13 @@ struct SettingsView: View {
                 ServerSettingsTab()
                     .tabItem { Label("Server", systemImage: "server.rack") }
                     .tag(SettingsTab.server)
-                AISettingsTab()
-                    .tabItem { Label("AI", systemImage: "sparkles") }
-                    .tag(SettingsTab.ai)
             }
             #else
             TabView {
                 ServerSettingsTab()
                     .tabItem { Label("Server", systemImage: "server.rack") }
-                AISettingsTab()
-                    .tabItem { Label("AI", systemImage: "sparkles") }
+//                AISettingsTab()
+//                    .tabItem { Label("AI", systemImage: "sparkles") }
             }
             #endif
         }
@@ -84,6 +82,14 @@ struct SettingsView: View {
             }
             #endif
         }
+        #if os(macOS)
+        .onChange(of: appState.deepLinkSettingsTab) { _, requested in
+            if let requested {
+                selectedTab = requested
+                appState.deepLinkSettingsTab = nil
+            }
+        }
+        #endif
         .onReceive(NotificationCenter.default.publisher(for: .hermitRestartRequired)) { _ in
             showRestartBanner = true
             // Auto-dismiss after 4 s — covers cases where the port publisher
@@ -107,6 +113,7 @@ struct SettingsView: View {
 #if os(macOS)
 private struct GeneralSettingsTab: View {
     @AppStorage("hermit.menuBarStyle") private var menuBarStyle = MenuBarStyle.nativeMenu.rawValue
+    @AppStorage("hermit.dashboardAlwaysOnTop") private var alwaysOnTop = true
 
     var body: some View {
         Form {
@@ -127,6 +134,16 @@ private struct GeneralSettingsTab: View {
                 .foregroundStyle(.secondary)
             } header: {
                 Text("Menu bar")
+            }
+
+            Section {
+                Toggle("Keep dashboard always on top", isOn: $alwaysOnTop)
+            } header: {
+                Text("Dashboard")
+            } footer: {
+                Text("When enabled, the dashboard floats above other windows.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
         }
         .formStyle(.grouped)
@@ -701,13 +718,13 @@ private struct GitCredentialHelperSection: View {
     }
 }
 
-struct GitCredential {
+private struct GitCredential {
     let host: String
     let username: String
     let password: String
 }
 
-enum GitCredentialLookupResult {
+private enum GitCredentialLookupResult {
     case success(GitCredential)
     case failure(String)
 }
@@ -723,7 +740,7 @@ enum GitCredentialLookupResult {
 ///  2. Direct `SecItemCopyMatching` for `gh:<host>` generic passwords — handles
 ///     credentials stored by `gh auth login`.  The gh CLI creates these items
 ///     with an open ACL so no system confirmation dialog appears.
-enum GitCredentialHelper {
+private enum GitCredentialHelper {
 
     private static let helperCandidates: [String] = [
         "/Library/Developer/CommandLineTools/usr/libexec/git-core/git-credential-osxkeychain",
@@ -842,7 +859,7 @@ enum GitCredentialHelper {
     }
 }
 
-func resolvedCredentialHost(endpoint: String, override: String) -> String {
+private func resolvedCredentialHost(endpoint: String, override: String) -> String {
     let trimmedOverride = override.trimmingCharacters(in: .whitespacesAndNewlines)
     if !trimmedOverride.isEmpty {
         return trimmedOverride
@@ -872,12 +889,29 @@ private struct RepositorySettingsTab: View {
     @State private var validating:    UUID?        = nil   // repo ID currently being validated
     @State private var validationError: String?    = nil   // error message to show
     @State private var errorRepo:     Repository?  = nil   // repo that failed, offered for edit
-    @State private var selection:    Set<UUID>   = []
+    @State private var selection:   Set<UUID> = []
+    @State private var configError: String?  = nil
 
     var body: some View {
         VStack(spacing: 0) {
             // ── Toolbar ──────────────────────────────────────────────────
             HStack {
+                #if os(macOS)
+                Button { triggerImport() } label: {
+                    Label("Import Config", systemImage: "square.and.arrow.down")
+                }
+                .buttonStyle(.borderless)
+                .padding([.top, .leading, .bottom], 8)
+                .help("Import a hermit-repos-team.json to load shared accounts and repositories")
+
+                Button { triggerExport() } label: {
+                    Label("Export Config", systemImage: "square.and.arrow.up")
+                }
+                .buttonStyle(.borderless)
+                .padding([.top, .leading, .bottom], 8)
+                .help("Save a hermit-repos-team.json to share your accounts and repositories with teammates")
+                #endif
+
                 Spacer()
                 Button { showAddSheet = true } label: {
                     Label("Add Repository", systemImage: "plus")
@@ -993,7 +1027,54 @@ private struct RepositorySettingsTab: View {
                 deleteTarget = nil
             }
         }
+        .alert("Config error", isPresented: Binding(
+            get: { configError != nil },
+            set: { if !$0 { configError = nil } }
+        )) {
+            Button("OK", role: .cancel) { configError = nil }
+        } message: {
+            Text(configError ?? "")
+        }
     }
+
+    // MARK: - Import / Export
+
+    #if os(macOS)
+    private func triggerExport() {
+        let data: Data
+        do { data = try SharedConfigStore.exportJSON() }
+        catch { configError = error.localizedDescription; return }
+
+        // Defer past SwiftUI's button-tap update cycle so the panel opens correctly.
+        DispatchQueue.main.async {
+            let panel = NSSavePanel()
+            panel.nameFieldStringValue = "hermit-repos-team.json"
+            panel.allowedContentTypes  = [UTType.json]
+            panel.message = "Share this file with teammates — each member drops it into ~/Library/Application Support/Hermit/config/"
+            panel.isExtensionHidden    = false
+            guard panel.runModal() == .OK, let url = panel.url else { return }
+            try? data.write(to: url, options: .atomic)
+        }
+    }
+
+    private func triggerImport() {
+        // Defer past SwiftUI's button-tap update cycle so the panel opens correctly.
+        DispatchQueue.main.async {
+            let panel = NSOpenPanel()
+            panel.allowedContentTypes     = [UTType.json]
+            panel.allowsMultipleSelection = false
+            panel.canChooseDirectories    = false
+            panel.message                 = "Select a hermit-repos-team.json to load shared accounts and repositories"
+            guard panel.runModal() == .OK, let url = panel.url else { return }
+            do {
+                let fileData = try Data(contentsOf: url)
+                try SharedConfigStore.applyData(fileData)
+            } catch {
+                // Error is intentionally swallowed here; applyData logs internally.
+            }
+        }
+    }
+    #endif
 
     // MARK: - Validation
 

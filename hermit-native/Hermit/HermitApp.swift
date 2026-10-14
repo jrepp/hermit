@@ -134,6 +134,7 @@ final class HermitAppDelegate: NSObject, NSApplicationDelegate {
         for url in urls {
             if let path = HermitActivity.rfcPath(from: url) {
                 AppState.shared.pendingDeepLinkPath = path
+                RFCViewerWindowManager.shared.resolvePendingDeepLink(appState: AppState.shared)
                 break
             }
         }
@@ -274,6 +275,34 @@ final class RFCViewerWindowManager {
         DispatchQueue.main.async {
             NSApp.setActivationPolicy(.regular)
         }
+    }
+}
+
+// hermit-txn: resolve a pending hermit://rfc/<path> deep link (see AppState.pendingDeepLinkPath)
+// against already-loaded RFC lists and open the matching document's viewer window.
+extension RFCViewerWindowManager {
+    /// Tries every configured repo's cached RFC list. Used right when a deep link
+    /// arrives, in case some repo's list is already cached from an earlier session.
+    @discardableResult
+    func resolvePendingDeepLink(appState: AppState) -> Bool {
+        for repo in RepositoryStore.shared.repositories {
+            guard let sections = RepoRFCCache.shared.nativeSections(for: repo.id) else { continue }
+            if resolvePendingDeepLink(in: sections.mainBranch + sections.pullRequests, repo: repo, appState: appState) {
+                return true
+            }
+        }
+        return false
+    }
+
+    /// Tries a specific repo's just-loaded RFC list — called as a retry whenever
+    /// a repo's RFCs finish loading, in case the deep link arrived before that.
+    @discardableResult
+    func resolvePendingDeepLink(in rfcs: [RFC], repo: Repository, appState: AppState) -> Bool {
+        guard let path = appState.pendingDeepLinkPath,
+              let rfc = rfcs.first(where: { $0.path == path }) else { return false }
+        appState.pendingDeepLinkPath = nil
+        open(rfc: rfc, repo: repo, appState: appState)
+        return true
     }
 }
 
@@ -609,7 +638,7 @@ final class HermitNativeMenu: NSMenu, NSMenuDelegate {
     }
 
     @objc private func openSettings() {
-        DashboardFloatingWindowManager.shared.open(appState: AppState.shared, openToSettings: true)
+        SettingsWindowManager.shared.open(appState: AppState.shared)
     }
 
     @objc private func allowPairing() {
@@ -723,7 +752,7 @@ final class HermitRepoSubMenu: NSMenu, NSMenuDelegate {
                 let primaryPRs = primaryPRDocuments(from: prs)
 
                 let prRFCs = primaryPRs.map {
-                    RFC(id: "pr-\($0.number)", title: $0.prTitle.isEmpty ? $0.title : $0.prTitle,
+                    RFC(id: "pr-\($0.number)", title: $0.title.isEmpty ? $0.prTitle : $0.title,
                         path: $0.documentPath, sha: $0.headSHA, source: .pullRequest($0),
                         lifecycleStatus: nil, htmlURL: $0.htmlURL,
                         documentType: $0.documentType)
@@ -731,6 +760,8 @@ final class HermitRepoSubMenu: NSMenu, NSMenuDelegate {
                 guard !Task.isCancelled else { return }
                 self.loadState = .loaded(mainRFCs, prRFCs)
                 self.populate(main: mainRFCs, prs: prRFCs)
+                // hermit-txn: retry a deep link that arrived before this repo's RFCs loaded.
+                RFCViewerWindowManager.shared.resolvePendingDeepLink(in: mainRFCs + prRFCs, repo: self.repo, appState: AppState.shared)
             } catch {
                 guard !Task.isCancelled else { return }
                 self.loadState = .failed(error.localizedDescription)
@@ -779,8 +810,18 @@ final class HermitRepoSubMenu: NSMenu, NSMenuDelegate {
 final class DashboardFloatingWindowManager {
     static let shared = DashboardFloatingWindowManager()
     private var controller: NSWindowController?
+    private var defaultsObserver: NSObjectProtocol?
+    private static let frameKey        = "hermit.dashboardWindowFrame"
+    private static let alwaysOnTopKey  = "hermit.dashboardAlwaysOnTop"
 
-    func open(appState: AppState, openToSettings: Bool = false) {
+    private static var alwaysOnTop: Bool {
+        // Default true — key absent means "not yet set" → on.
+        UserDefaults.standard.object(forKey: alwaysOnTopKey) == nil
+            ? true
+            : UserDefaults.standard.bool(forKey: alwaysOnTopKey)
+    }
+
+    func open(appState: AppState) {
         if let existing = controller?.window, existing.isVisible {
             existing.makeKeyAndOrderFront(nil)
             NSApp.activate(ignoringOtherApps: true)
@@ -795,17 +836,15 @@ final class DashboardFloatingWindowManager {
         )
         panel.title = "Hermit Dashboard"
         panel.isFloatingPanel = true
-        panel.level = .floating
+        panel.level = Self.alwaysOnTop ? .floating : .normal
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
         panel.hidesOnDeactivate = false
         panel.isReleasedWhenClosed = false
         panel.minSize = NSSize(width: 780, height: 580)
-        panel.center()
 
         let content = MenuBarContentView(
             managesWindowPresentation: false,
             allowsDetach: false,
-            openToSettings: openToSettings,
             onOpenReview: {},
             onClose: { [weak panel] in panel?.close() }
         )
@@ -815,12 +854,123 @@ final class DashboardFloatingWindowManager {
         hosting.sizingOptions = []
         panel.contentViewController = hosting
 
+        // Restore frame AFTER content is attached so SwiftUI's initial layout
+        // doesn't override the saved size.
+        if let saved = Self.savedFrame() {
+            panel.setFrame(saved, display: false)
+        } else {
+            panel.center()
+        }
+
         let controller = NSWindowController(window: panel)
         self.controller = controller
 
         NotificationCenter.default.addObserver(
             forName: NSWindow.willCloseNotification,
             object: panel,
+            queue: .main
+        ) { [weak self, weak panel] _ in
+            if let panel { Self.persistFrame(panel.frame) }
+            self?.defaultsObserver = nil
+            Task { @MainActor in self?.controller = nil }
+        }
+
+        // React to the toggle changing while the window is open.
+        defaultsObserver = NotificationCenter.default.addObserver(
+            forName: UserDefaults.didChangeNotification,
+            object: nil,
+            queue: .main
+        ) { [weak panel] _ in
+            panel?.level = Self.alwaysOnTop ? .floating : .normal
+        }
+
+        controller.showWindow(nil)
+        NSApp.activate(ignoringOtherApps: true)
+        DispatchQueue.main.async {
+            NSApp.setActivationPolicy(.regular)
+        }
+    }
+
+    /// Returns the saved frame, constrained so the window is fully visible on the
+    /// screen with the most overlap. Clamps size to the screen and nudges the origin
+    /// so no edge hangs off. Returns nil if no screen overlaps at all (fall back to center).
+    private static func savedFrame() -> NSRect? {
+        guard let str = UserDefaults.standard.string(forKey: frameKey) else { return nil }
+        var rect = NSRectFromString(str)
+        guard rect.width > 0, rect.height > 0 else { return nil }
+
+        // Pick the screen whose visible area overlaps the most with the saved frame.
+        guard let screen = NSScreen.screens.max(by: {
+            overlapArea($0.visibleFrame, rect) < overlapArea($1.visibleFrame, rect)
+        }), overlapArea(screen.visibleFrame, rect) > 0 else { return nil }
+
+        let vis = screen.visibleFrame
+
+        // Clamp size so the window can't be larger than the screen.
+        rect.size.width  = min(rect.size.width,  vis.width)
+        rect.size.height = min(rect.size.height, vis.height)
+
+        // Nudge origin so the window is fully inside the visible frame.
+        rect.origin.x = max(vis.minX, min(rect.origin.x, vis.maxX - rect.width))
+        rect.origin.y = max(vis.minY, min(rect.origin.y, vis.maxY - rect.height))
+
+        return rect
+    }
+
+    private static func overlapArea(_ a: NSRect, _ b: NSRect) -> CGFloat {
+        let ix = a.intersection(b)
+        return ix.isNull ? 0 : ix.width * ix.height
+    }
+
+    private static func persistFrame(_ frame: NSRect) {
+        UserDefaults.standard.set(NSStringFromRect(frame), forKey: frameKey)
+    }
+}
+
+// MARK: - Settings Window Manager (macOS)
+// Opens a standalone settings window. Uses a regular NSWindow (not a utility
+// panel) so it becomes the key window and NSSavePanel/NSOpenPanel attach correctly.
+
+final class SettingsWindowManager {
+    static let shared = SettingsWindowManager()
+    private var controller: NSWindowController?
+
+    func open(appState: AppState) {
+        if let existing = controller?.window, existing.isVisible {
+            existing.makeKeyAndOrderFront(nil)
+            NSApp.activate(ignoringOtherApps: true)
+            return
+        }
+
+        let screen = NSScreen.main ?? NSScreen.screens.first
+        let screenFrame = screen?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1440, height: 900)
+        let winHeight = (screenFrame.height * 0.6).rounded()
+        let winWidth  = 800.0
+
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: winWidth, height: winHeight),
+            styleMask: [.titled, .closable, .resizable, .miniaturizable],
+            backing: .buffered,
+            defer: false
+        )
+        window.title = "Hermit Settings"
+        window.isReleasedWhenClosed = false
+        window.minSize = NSSize(width: winWidth, height: winHeight)
+        window.center()
+
+        let hosting = NSHostingController(rootView:
+            SettingsView(embedded: true)
+                .environmentObject(appState)
+        )
+        hosting.sizingOptions = []
+        window.contentViewController = hosting
+
+        let controller = NSWindowController(window: window)
+        self.controller = controller
+
+        NotificationCenter.default.addObserver(
+            forName: NSWindow.willCloseNotification,
+            object: window,
             queue: .main
         ) { [weak self] _ in
             Task { @MainActor in self?.controller = nil }
@@ -883,66 +1033,3 @@ final class NewRFCWindowManager {
     }
 }
 #endif
-
-// MARK: - Shared PR document filtering (all platforms)
-
-/// Returns the single primary `RFCPullRequest` for each PR in `prs`.
-/// Filters to genuine RFC documents (documentType == "rfc", rfc-NNN path),
-/// prefers actionable (non-terminal) lifecycle status, and uses the highest
-/// RFC number as a tiebreaker so superseded/updated files are not picked over
-/// the newly proposed one.
-func primaryPRDocuments(from prs: [RFCPullRequest]) -> [RFCPullRequest] {
-    Dictionary(grouping: prs, by: { $0.number })
-        .values
-        .compactMap { group -> RFCPullRequest? in
-            let rfcs = group.filter { $0.documentType == "rfc" && isRFCDocumentPath($0.documentPath) }
-            guard !rfcs.isEmpty else { return nil }
-            let actionable = rfcs.filter { !isTerminalStatus($0.lifecycleStatus) }
-            return (actionable.isEmpty ? rfcs : actionable)
-                .max(by: { rfcNumberFromPath($0.documentPath) < rfcNumberFromPath($1.documentPath) })
-        }
-        .sorted { $0.number < $1.number }
-}
-
-/// Returns true when `path` points to a genuine RFC document.
-/// Matches filenames like `rfc-001-title.md` but rejects index files
-/// (`rfc-index.md`), ADRs, PRDs, and any file without a numeric suffix
-/// immediately following the `rfc-` prefix.
-func isRFCDocumentPath(_ path: String) -> Bool {
-    isDocumentPath(path, docType: "rfc")
-}
-
-/// Generic docs-cms document-path check: true when `path` is a numbered
-/// `<docType>-NNN-slug.md` file (e.g. adr-003-…, prd-001-…, rfc-076-…, memo-002-…).
-/// Rejects index files and files without a numeric suffix after the prefix (ADR-011).
-func isDocumentPath(_ path: String, docType: String) -> Bool {
-    guard let filename = path.split(separator: "/").last.map(String.init) else { return false }
-    let lower = filename.lowercased()
-    let prefix = docType.lowercased() + "-"
-    guard lower.hasSuffix(".md"), lower.hasPrefix(prefix) else { return false }
-    return lower.dropFirst(prefix.count).first?.isNumber == true
-}
-
-/// Extracts the RFC sequence number from a path like `docs-cms/rfcs/rfc-076-title.md` → 76.
-func rfcNumberFromPath(_ path: String) -> Int {
-    documentNumberFromPath(path, docType: "rfc")
-}
-
-/// Generic docs-cms sequence number from a `<docType>-NNN-…` path (ADR-011).
-func documentNumberFromPath(_ path: String, docType: String) -> Int {
-    guard let filename = path.split(separator: "/").last.map(String.init) else { return 0 }
-    let lower = filename.lowercased()
-    let prefix = docType.lowercased() + "-"
-    guard lower.hasPrefix(prefix) else { return 0 }
-    let digits = lower.dropFirst(prefix.count).prefix(while: { $0.isNumber })
-    return Int(digits) ?? 0
-}
-
-/// Returns true for lifecycle statuses that mean the RFC is no longer actively
-/// being proposed — superseded, implemented, or rejected.
-func isTerminalStatus(_ status: String?) -> Bool {
-    switch status?.lowercased() {
-    case "superseded", "implemented", "rejected": return true
-    default: return false
-    }
-}
