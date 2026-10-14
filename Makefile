@@ -213,6 +213,14 @@ test-native-models: ## Test native document selection without launching the app
 		-o .tmp/hermit-model-tests
 	@.tmp/hermit-model-tests
 
+.PHONY: test-native-keychain
+test-native-keychain: ## Test credential caching without accessing the system Keychain
+	@mkdir -p .tmp
+	DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer xcrun swiftc \
+		hermit-native/Hermit/Auth/KeychainHelper.swift hermit-native/tests/keychain_tests.swift \
+		-o .tmp/hermit-keychain-tests
+	@.tmp/hermit-keychain-tests
+
 native-test: ## Run the native app test suite
 	@echo "Testing Hermit..."
 	$(XCODE) \
