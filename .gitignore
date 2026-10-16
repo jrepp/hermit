@@ -49,3 +49,6 @@ hermit-native/HermitNative/HermitServer.xcframework/
 .idea/
 scripts/__pycache__/
 /deploy
+
+# Gantry local keys, generated skills, task database, logs, and process state
+/.agf-workspace/
