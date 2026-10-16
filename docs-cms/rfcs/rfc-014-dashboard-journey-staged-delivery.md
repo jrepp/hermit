@@ -3,7 +3,7 @@ title: Dashboard Journey and Staged Delivery
 status: Draft
 author: Jacob Repp
 created: 2026-10-16T17:00:00Z
-updated: 2026-10-16T17:00:00Z
+updated: 2026-10-16T18:47:49Z
 tags: [dashboard, delivery, design, gantry]
 id: rfc-014
 project_id: hermit
@@ -18,7 +18,7 @@ supporting PRs and three human design reviews. This is a delivery proposal; it
 does not approve a new layout or replace the forthcoming dashboard PRD.
 
 Gantry workflow `wf-gen-thr7mb`, workstream `dashboard-journey`, holds the live
-plan. It contains 14 pending tasks with dependency links. The workflow remains
+plan. It contains 15 pending tasks with dependency links. The workflow remains
 `proposed`. The next concrete action is **D1: draft the dashboard journey PRD**.
 Later tasks are provisional and must be revised as reviews resolve open questions.
 
@@ -78,12 +78,12 @@ priority is out of scope unless the API supplies trustworthy signals.
 
 | Stage | Gantry tasks | Reviewable result | Exit condition |
 | --- | --- | --- | --- |
-| Baseline | B0 | Review current upstream and integration PR #27 | Human-reviewed baseline, required checks, authorized merge and recorded main SHA |
+| Baseline | B0 | Review current upstream and integration PR #27 | Human-reviewed baseline, full macOS build and smoke evidence, required checks, authorized merge, main SHA and existing release pin recorded |
 | Product definition | D1, R1 | Draft PRD-002, RFC-008 reconciliation, scenario matrix | Human journey and information-priority review |
-| Design and contracts | D2, D3, R2 | State/API mapping and annotated compact/detached prototypes | Human design and engineering review of feasible interactions |
+| Design and contracts | D2, D3, M0, R2 | State/API mapping, platform-scoped prototypes and measured current-layout baseline | Human design and engineering review with iPad scope resolved and baseline evidence accepted |
 | Supporting changes | P1, P2 | Separate model/fixture PR and coverage/recovery PR | Each reviewed, tested and merged before its dependent PR |
 | Dashboard changes | P3, P4 | Separate hierarchy PR and completion/return-to-queue PR | Approved design implemented with meaningful regression evidence |
-| Validation and adoption | O1, O2, V1, R3 | Stable test environment, cross-target evidence and release review | Explicit approval, tested main SHA, updated docs and rollback reference |
+| Validation and adoption | O1, O2, V1, R3 | Stable test environment, cross-target evidence and release review | Explicit promotion approval for pinned tested artifacts, updated docs and rollback reference |
 
 Design work can proceed while B0 remains open. Production implementation requires
 both B0 and R2. Each implementation task is a separate intended PR; split further
@@ -94,9 +94,13 @@ land. Do not stack unrelated feature work into the dashboard changes.
 flowchart TD
     D1[Draft journey PRD] --> R1[Human journey review]
     R1 --> D2[State and API mapping]
-    R1 --> D3[Compact and detached prototypes]
+    R1 --> D3[Platform-scoped prototypes]
+    R1 --> M0[Measured current-layout baseline]
+    B0 --> M0
+    O2[Runnable iPad target] --> M0
     D2 --> R2[Human interaction and contract review]
     D3 --> R2
+    M0 --> R2
     B0[Reviewed upstream baseline] --> P1[Queue model and fixture PR]
     R2 --> P1
     P1 --> P2[Coverage and recovery PR]
@@ -104,7 +108,7 @@ flowchart TD
     P3 --> P4[Completion and return PR]
     P4 --> V1[Cross-target journey validation]
     O1[Stable development signing] --> V1
-    O2[Runnable iPad target] --> V1
+    O2 --> V1
     V1 --> R3[Human design and release review]
 ```
 
@@ -117,6 +121,41 @@ to accurate pending, success and failure states and restores queue context.
 
 If a required review action is missing, P4 triggers a new scope review. It must
 not silently grow a new commenting or approval subsystem.
+
+## Native build and merge gates
+
+B0 requires a full macOS app build and focused launch, new/existing Settings
+window and refresh/recovery smoke results on the final PR head. Record SHA,
+commands, signing overrides, OS and results before authorizing merge; record the
+resulting main SHA and repeat checks if the merged tree differs. The four current
+CI jobs cover Go, OpenAPI, standalone native model/Keychain tests and the web UI;
+they do not build the full native applications. Their success cannot substitute
+for this evidence. Any outstanding iPad baseline validation remains explicitly
+recorded as a release blocker, not an implied pass.
+
+Each P1–P4 PR requires a full macOS build and focused smoke checks for the changed
+journey on its final head before merge. Shared native code or iPad changes also
+require a full iPad app build and launch/smoke checks on the configured target.
+Record the commands, build SHA, device/OS and results with the PR. If a required
+target is unavailable, that PR remains blocked. O2 provides that target before
+M0 and R2; the final V1 usability review remains a separate requirement.
+
+## iPad scope and design coverage
+
+D1 proposes whether iPad receives dashboard journey parity or regression-only
+coverage of its existing reading/commenting journey. R1 must explicitly choose
+and record that scope in PRD-002; silence is not a scope decision. D2 maps the
+selected platform behaviors and contracts. D3 supplies annotated iPad portrait,
+landscape and supported narrow-window flows for parity, or an explicit existing
+journey and regression matrix for regression-only scope. Reconcile RFC-009 where
+the approved iPad scope changes its requirements.
+
+R2 cannot close without these artifacts and matching implementation boundaries.
+For parity, P2–P4 include the affected iPad views and shared models as well as the
+macOS dashboard. For regression-only scope, those tasks preserve the documented
+iPad behavior and V1 verifies it without claiming iPad dashboard improvement.
+Both scopes retain iPad build, runtime and accessibility validation. Any later
+scope reduction requires fresh human approval and a PRD update.
 
 ## Review protocol
 
@@ -137,8 +176,26 @@ blocker before dependent work continues.
 D1 must define success measures and R1 must approve their thresholds before
 implementation: successful next-action selection, time to identify that action,
 correct understanding of coverage, and correct understanding of submission state.
-Collect a current-layout baseline using the same scenarios; do not claim an
-improvement without measurements.
+D1 also proposes participant selection, scenario/fixture revisions, task wording,
+timing boundaries and how failures are scored. R1 approves this method and the
+platform scope alongside the thresholds; approval must precede measurement.
+
+M0 owns collecting the current-layout baseline on the B0-reviewed revision using
+that method and the O2 target. Record the build SHA, device/OS, scenario and
+fixture revisions, participant selection and anonymized observations, task
+success, timing, coverage comprehension and submission-state comprehension.
+For regression-only iPad scope, capture existing-journey regression evidence
+rather than promising dashboard improvement. Synthetic inputs may be prepared
+without production layout changes or real credentials; stable signing O1 is not
+required for fixture-only measurement. Record any consent or environment limits.
+
+R2 is blocked by M0 and must accept the actual baseline evidence, not screenshots
+alone. Design and prototype work may proceed while M0 awaits B0 or O2, but
+implementation cannot. V1 repeats the approved method and scenarios against the
+candidate artifacts. If scenarios, participant selection or the method change
+materially, recollect a comparable baseline and obtain renewed approval before
+claiming improvement. Do not invent missing measurements or adjust thresholds
+after seeing results.
 
 The evidence matrix includes multi-repository PR-number collisions, several
 documents in one PR, closed-PR re-review, saved team/repository scope, true empty
@@ -165,6 +222,28 @@ credential ownership. Do not infer reviewer assignment from unrelated metadata.
 
 ## Migration Strategy
 
+`main` is an integration branch for this work. Merging P1–P4 permits development
+and explicit test builds; it does not authorize stable release or routine-user
+adoption. B0 records the currently approved deployed app/backend artifact set,
+source SHAs and artifact locations/checksums as the release and rollback pin. If
+no approved release exists, record that explicitly and publish no stable release
+until R3. Do not describe the B0 integration candidate as a released baseline.
+
+Before R3, routine users remain on the recorded release pin; candidate builds are
+used only for explicit validation. Do not automatically deploy the dashboard
+commits or advance a stable release reference merely because main changed. This
+applies to a shared backend as well as the app. No feature-flag system is required
+for this pinned-release approach.
+
+V1 records the exact candidate main SHA and app/backend artifacts it tested.
+R3 authorizes promotion of only that artifact set and records the approver,
+decision, promotion target, previous release pin and rollback procedure. A newer
+main SHA or rebuilt artifact needs applicable revalidation and renewed approval;
+approval does not float with main. Rollback restores the previously approved
+app/backend set, with compatibility checked before promotion. When no previous
+release exists, the fallback is withdrawal of the candidate, not an invented
+stable build. Commit reverts remain available for development recovery.
+
 Keep saved scope, account bindings and Settings navigation intact. Make each PR
 independently reviewable and retain a commit-level revert path. Avoid a broad
 dashboard rewrite or new rollout infrastructure unless the design review finds
@@ -188,8 +267,10 @@ into a second tracker.
 Ad-hoc signing can change the identity trusted by Keychain on rebuild. O1 needs
 a stable local signing setup. O2 needs a working simulator runtime or configured
 physical iPad; the installed SDK alone did not provide a runnable target. These
-block full release validation, not fixture-based design work. Reducing platform
-scope requires an explicit decision and corresponding PRD update.
+block full release validation, not fixture-based design work. O2 also blocks M0
+and therefore R2 so platform feasibility and baseline evidence exist before
+implementation. Reducing platform scope requires an explicit decision and
+corresponding PRD update.
 
 ## Local Gantry operation
 
@@ -274,8 +355,9 @@ would shorten the branch sequence while making review and rollback harder.
 Start with D1, then review its concrete artifacts at R1. Run environment setup
 when its prerequisites are available. Revisit the downstream plan after each
 review; no calendar dates or unapproved implementation commitments are implied.
-Use small feature PRs into main with relevant checks and explicit human review.
-R3 confirms the tested revision and adoption decision after V1 evidence exists.
+Use small feature PRs into main with native build/smoke evidence, relevant checks
+and explicit human review. R3 authorizes promotion of the pinned tested artifact
+set only after V1 evidence exists; integration merges do not advance the release.
 
 # Unresolved Questions
 
